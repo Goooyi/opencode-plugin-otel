@@ -6,10 +6,12 @@ import type { HandlerContext } from "../types.ts"
 /**
  * Records lines-added/removed for a `session.diff` event. opencode publishes each event
  * with the cumulative session diff (first snapshot → latest), so we emit two instruments:
- * `opencode.lines_of_code.count` (Counter) receives only the positive delta since the
- * previous event for this session, so summing across a session yields the net total without
- * double counting. `opencode.lines_of_code.total` (Gauge) records the current cumulative
- * total, overwritten on every event.
+ * `opencode.lines_of_code.count` (Counter) receives only the *positive* per-event delta
+ * for each dimension (additions, deletions). Negative deltas — opencode reporting a smaller
+ * cumulative for a dimension than the previous event — are dropped, so the counter reports
+ * gross positive churn and does not reconcile to net after any revert (full or partial).
+ * `opencode.lines_of_code.total` (Gauge) mirrors opencode's current cumulative value on
+ * every event and is the authoritative live view.
  */
 export function handleSessionDiff(e: EventSessionDiff, ctx: HandlerContext) {
   const sessionID = e.properties.sessionID
@@ -25,7 +27,15 @@ export function handleSessionDiff(e: EventSessionDiff, ctx: HandlerContext) {
   const prev = ctx.sessionDiffTotals.get(sessionID) ?? { additions: 0, deletions: 0 }
   const deltaAdded = totalAdded - prev.additions
   const deltaRemoved = totalRemoved - prev.deletions
-  setBoundedMap(ctx.sessionDiffTotals, sessionID, { additions: totalAdded, deletions: totalRemoved })
+  const nextTotals = { additions: totalAdded, deletions: totalRemoved }
+  if (ctx.sessionDiffTotals.has(sessionID)) {
+    // Existing session: update in place. Calling setBoundedMap on a full map would
+    // evict an unrelated session here, and that session's next session.diff would
+    // be treated as first-seen — reintroducing the cumulative double-count bug.
+    ctx.sessionDiffTotals.set(sessionID, nextTotals)
+  } else {
+    setBoundedMap(ctx.sessionDiffTotals, sessionID, nextTotals)
+  }
 
   const baseAttrs = { ...ctx.commonAttrs, "session.id": sessionID }
 

@@ -91,6 +91,27 @@ describe("handleSessionDiff", () => {
     expect(added).toEqual([5])
   })
 
+  test("linesCounter is gross-only across a partial revert (additions shrink, deletions grow)", () => {
+    // Cumulative goes {additions:10, deletions:0} -> {additions:5, deletions:5}.
+    // Delta is {added:-5, removed:+5}. Negative added is skipped; positive removed
+    // is emitted. Counter ends at added=10, removed=5 while the authoritative live
+    // cumulative is added=5, removed=5 — the counter is GROSS, not net. Live
+    // cumulative state is surfaced via linesTotalGauge (see next test).
+    const { ctx, counters, gauges } = makeCtx()
+    handleSessionDiff(makeSessionDiff("ses_1", [{ file: "a.ts", additions: 10, deletions: 0 }]), ctx)
+    handleSessionDiff(makeSessionDiff("ses_1", [{ file: "a.ts", additions: 5, deletions: 5 }]), ctx)
+
+    const added = counters.lines.calls.filter((c) => c.attrs["type"] === "added").map((c) => c.value)
+    const removed = counters.lines.calls.filter((c) => c.attrs["type"] === "removed").map((c) => c.value)
+    expect(added).toEqual([10])
+    expect(removed).toEqual([5])
+
+    const gaugeAdded = gauges.linesTotal.calls.filter((c) => c.attrs["type"] === "added").map((c) => c.value)
+    const gaugeRemoved = gauges.linesTotal.calls.filter((c) => c.attrs["type"] === "removed").map((c) => c.value)
+    expect(gaugeAdded).toEqual([10, 5])
+    expect(gaugeRemoved).toEqual([0, 5])
+  })
+
   test("linesTotalGauge records cumulative totals, including zero after revert", () => {
     const { ctx, gauges } = makeCtx()
     handleSessionDiff(makeSessionDiff("ses_1", [{ file: "a.ts", additions: 5, deletions: 2 }]), ctx)
