@@ -1,7 +1,7 @@
 import type { HandlerContext, Instruments } from "../src/types.ts"
 import type { LogRecord } from "@opentelemetry/api-logs"
 import type { Counter, Gauge, Histogram, Span, SpanOptions, Tracer, Context, SpanContext, SpanStatus, Attributes } from "@opentelemetry/api"
-import { SpanStatusCode, trace } from "@opentelemetry/api"
+import { ROOT_CONTEXT, SpanStatusCode, trace } from "@opentelemetry/api"
 
 export type SpyCounter = {
   calls: Array<{ value: number; attrs: Record<string, unknown> }>
@@ -202,6 +202,7 @@ export function makeCtx(projectID = "proj_test", disabledMetrics: string[] = [],
     disabledTraces: new Set(disabledTraces),
     tracer: tracer as unknown as Tracer,
     tracePrefix: "opencode.",
+    rootContext: () => ROOT_CONTEXT,
     sessionSpans: new Map(),
     messageSpans: new Map(),
     sessionInputs: new Map(),

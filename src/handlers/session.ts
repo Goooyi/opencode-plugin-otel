@@ -1,5 +1,5 @@
 import { SeverityNumber } from "@opentelemetry/api-logs"
-import { SpanStatusCode, context, trace } from "@opentelemetry/api"
+import { SpanStatusCode, trace } from "@opentelemetry/api"
 import type { EventSessionCreated, EventSessionIdle, EventSessionError, EventSessionStatus } from "@opencode-ai/sdk"
 import { AGENT_NAME, OpenInferenceSpanKind, SemanticConventions, SESSION_ID } from "@arizeai/openinference-semantic-conventions"
 import { errorSummary, setBoundedMap, isMetricEnabled, isTraceEnabled } from "../util.ts"
@@ -18,14 +18,14 @@ export function handleSessionCreated(e: EventSessionCreated, ctx: HandlerContext
   setBoundedMap(ctx.sessionTotals, sessionID, { startMs: createdAt, tokens: 0, cost: 0, messages: 0, agent: "unknown" })
 
   // WARNING: disabling "session" traces while "llm" or "tool" traces remain enabled
-  // will cause those child spans to be emitted as unlinked root spans with no parent.
-  // There is no session span to parent them to. If you need a connected trace hierarchy,
-  // either enable all three trace types or disable all of them together.
+  // leaves those child spans without a local session parent. If OPENCODE_TRACEPARENT
+  // is set, they fall back to that remote parent; otherwise they become root spans.
   if (isTraceEnabled("session", ctx)) {
     const parentSpan = parentID ? ctx.sessionSpans.get(parentID) : undefined
+    const baseCtx = ctx.rootContext()
     const spanCtx = parentSpan
-      ? trace.setSpan(context.active(), parentSpan)
-      : context.active()
+      ? trace.setSpan(baseCtx, parentSpan)
+      : baseCtx
 
     const sessionSpan = ctx.tracer.startSpan(
       `${ctx.tracePrefix}session`,

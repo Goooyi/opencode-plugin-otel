@@ -50,6 +50,8 @@ describe("loadConfig", () => {
     "OPENCODE_OTLP_HEADERS",
     "OPENCODE_OTLP_HEADERS_HELPER",
     "OPENCODE_RESOURCE_ATTRIBUTES",
+    "OPENCODE_TRACEPARENT",
+    "OPENCODE_TRACESTATE",
     "OPENCODE_OTLP_METRICS_TEMPORALITY",
     "OPENCODE_DISABLE_METRICS",
     "OPENCODE_DISABLE_LOGS",
@@ -132,6 +134,14 @@ describe("loadConfig", () => {
     process.env["OPENCODE_RESOURCE_ATTRIBUTES"] = "team=platform,env=prod"
     loadConfig()
     expect(process.env["OTEL_RESOURCE_ATTRIBUTES"]).toBe("team=platform,env=prod")
+  })
+
+  test("reads OPENCODE trace context", () => {
+    process.env["OPENCODE_TRACEPARENT"] = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+    process.env["OPENCODE_TRACESTATE"] = "vendor=value"
+    const cfg = loadConfig()
+    expect(cfg.traceparent).toBe("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+    expect(cfg.tracestate).toBe("vendor=value")
   })
 
   test("does not set OTEL_EXPORTER_OTLP_HEADERS when OPENCODE_OTLP_HEADERS is unset", () => {

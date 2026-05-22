@@ -1,5 +1,5 @@
 import { SeverityNumber } from "@opentelemetry/api-logs"
-import { SpanStatusCode, SpanKind, context, trace } from "@opentelemetry/api"
+import { SpanStatusCode, SpanKind, trace } from "@opentelemetry/api"
 import type { AssistantMessage, EventMessageUpdated, EventMessagePartUpdated, ToolPart } from "@opencode-ai/sdk"
 import {
   AGENT_NAME,
@@ -256,9 +256,10 @@ export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: Handle
       const toolSpan = isTraceEnabled("tool", ctx)
         ? (() => {
             const sessionSpan = ctx.sessionSpans.get(toolPart.sessionID)
+            const baseCtx = ctx.rootContext()
             const parentCtx = sessionSpan
-              ? trace.setSpan(context.active(), sessionSpan)
-              : context.active()
+              ? trace.setSpan(baseCtx, sessionSpan)
+              : baseCtx
             return ctx.tracer.startSpan(
               `${ctx.tracePrefix}tool.${toolPart.tool}`,
               {
@@ -311,9 +312,10 @@ export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: Handle
     if (isTraceEnabled("tool", ctx)) {
       const toolSpan = pending?.span ?? (() => {
         const sessionSpan = ctx.sessionSpans.get(toolPart.sessionID)
+        const baseCtx = ctx.rootContext()
         const parentCtx = sessionSpan
-          ? trace.setSpan(context.active(), sessionSpan)
-          : context.active()
+          ? trace.setSpan(baseCtx, sessionSpan)
+          : baseCtx
         return ctx.tracer.startSpan(
           `${ctx.tracePrefix}tool.${toolPart.tool}`,
           {
@@ -408,9 +410,10 @@ export function startMessageSpan(
   const msgKey = `${sessionID}:${messageID}`
   if (ctx.messageSpans.has(msgKey)) return
   const sessionSpan = ctx.sessionSpans.get(sessionID)
+  const baseCtx = ctx.rootContext()
   const parentCtx = sessionSpan
-    ? trace.setSpan(context.active(), sessionSpan)
-    : context.active()
+    ? trace.setSpan(baseCtx, sessionSpan)
+    : baseCtx
 
   const msgSpan = ctx.tracer.startSpan(
     `${ctx.tracePrefix}llm`,

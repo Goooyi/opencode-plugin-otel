@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { SeverityNumber } from "@opentelemetry/api-logs"
 import { logs } from "@opentelemetry/api-logs"
-import { trace } from "@opentelemetry/api"
+import { ROOT_CONTEXT, trace } from "@opentelemetry/api"
 import { AGENT_NAME } from "@arizeai/openinference-semantic-conventions"
 import pkg from "../package.json" with { type: "json" }
 import type {
@@ -20,6 +20,7 @@ import { LEVELS, type Level, type HandlerContext } from "./types.ts"
 import { loadConfig, resolveHelperPath, resolveLogLevel } from "./config.ts"
 import { probeEndpoint } from "./probe.ts"
 import { setupOtel, createInstruments } from "./otel.ts"
+import { remoteParentContext } from "./trace-context.ts"
 import { handleSessionCreated, handleSessionIdle, handleSessionError, handleSessionStatus } from "./handlers/session.ts"
 import { handleMessageUpdated, handleMessagePartUpdated, startMessageSpan } from "./handlers/message.ts"
 import { handlePermissionUpdated, handlePermissionReplied } from "./handlers/permission.ts"
@@ -91,6 +92,11 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
     logger.emit(record)
   }
   const tracer = trace.getTracer("com.opencode")
+  const remoteContext = remoteParentContext(config.traceparent, config.tracestate)
+  if (config.traceparent && !remoteContext) {
+    await log("warn", "invalid OPENCODE_TRACEPARENT ignored", { traceparentLength: config.traceparent.length })
+  }
+  const rootContext = remoteContext ? () => remoteContext : () => ROOT_CONTEXT
   const pendingToolSpans = new Map()
   const pendingPermissions = new Map()
   const sessionTotals = new Map()
@@ -127,6 +133,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
     disabledTraces,
     tracer,
     tracePrefix: config.metricPrefix,
+    rootContext,
     sessionSpans,
     messageSpans,
     sessionInputs,

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test"
-import { SpanStatusCode } from "@opentelemetry/api"
+import { context, SpanStatusCode, trace, TraceFlags } from "@opentelemetry/api"
 import {
   AGENT_NAME,
   LLM_MODEL_NAME,
@@ -18,6 +18,7 @@ import {
 import type { Span } from "@opentelemetry/api"
 import { handleSessionCreated, handleSessionIdle, handleSessionError } from "../../src/handlers/session.ts"
 import { handleMessageUpdated, handleMessagePartUpdated, startMessageSpan } from "../../src/handlers/message.ts"
+import { remoteParentContext } from "../../src/trace-context.ts"
 import { makeCtx, makeTracer, type SpySpan } from "../helpers.ts"
 import type {
   EventSessionCreated,
@@ -129,6 +130,30 @@ describe("session spans", () => {
     const { ctx, tracer } = makeCtx()
     handleSessionCreated(makeSessionCreated("ses_child", 1000, "ses_parent"), ctx)
     expect(tracer.spans[0]!.attributes["session.is_subagent"]).toBe(true)
+  })
+
+  test("root session span is parented to injected remote context", () => {
+    const { ctx, tracer } = makeCtx()
+    const rootContext = remoteParentContext("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01", undefined)
+    expect(rootContext).toBeDefined()
+    ctx.rootContext = () => rootContext!
+    handleSessionCreated(makeSessionCreated("ses_1"), ctx)
+    expect(tracer.spans[0]!.parentSpan?.spanContext().traceId).toBe("0af7651916cd43dd8448eb211c80319c")
+    expect(tracer.spans[0]!.parentSpan?.spanContext().spanId).toBe("b7ad6b7169203331")
+  })
+
+  test("root session span resolves root context at span creation", () => {
+    const { ctx, tracer } = makeCtx()
+    let rootContext = context.active()
+    ctx.rootContext = () => rootContext
+    rootContext = trace.setSpanContext(context.active(), {
+      traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+      spanId: "00f067aa0ba902b7",
+      traceFlags: TraceFlags.SAMPLED,
+    })
+    handleSessionCreated(makeSessionCreated("ses_1"), ctx)
+    expect(tracer.spans[0]!.parentSpan?.spanContext().traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736")
+    expect(tracer.spans[0]!.parentSpan?.spanContext().spanId).toBe("00f067aa0ba902b7")
   })
 
   test("ends session span with OK status on session.idle", () => {

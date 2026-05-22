@@ -21,6 +21,8 @@ export type PluginConfig = {
   otlpHeaders: string | undefined
   otlpHeadersHelper: string | undefined
   resourceAttributes: string | undefined
+  traceparent: string | undefined
+  tracestate: string | undefined
   metricsTemporality: MetricsTemporality | undefined
   disabledMetrics: Set<string>
   disabledTraces: Set<string>
@@ -65,6 +67,8 @@ export function loadConfig(): PluginConfig {
   const otlpHeaders = process.env["OPENCODE_OTLP_HEADERS"]
   const otlpHeadersHelper = process.env["OPENCODE_OTLP_HEADERS_HELPER"]
   const resourceAttributes = process.env["OPENCODE_RESOURCE_ATTRIBUTES"]
+  const traceparent = process.env["OPENCODE_TRACEPARENT"]
+  const tracestate = process.env["OPENCODE_TRACESTATE"]
   const rawTemporality = process.env["OPENCODE_OTLP_METRICS_TEMPORALITY"]
   const protocol = process.env["OPENCODE_OTLP_PROTOCOL"]
 
@@ -109,6 +113,8 @@ export function loadConfig(): PluginConfig {
     otlpHeaders,
     otlpHeadersHelper,
     resourceAttributes,
+    traceparent,
+    tracestate,
     metricsTemporality,
     disabledMetrics,
     disabledTraces,

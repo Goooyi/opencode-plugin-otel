@@ -1,4 +1,4 @@
-import type { Counter, Gauge, Histogram, Span, Tracer } from "@opentelemetry/api"
+import type { Context, Counter, Gauge, Histogram, Span, Tracer } from "@opentelemetry/api"
 import type { LogRecord } from "@opentelemetry/api-logs"
 
 /** Numeric priority map for log levels; higher value = higher severity. */
@@ -77,6 +77,7 @@ export type HandlerContext = {
   disabledTraces: Set<string>
   tracer: Tracer
   tracePrefix: string
+  rootContext: () => Context
   sessionSpans: Map<string, Span>
   messageSpans: Map<string, Span>
   sessionInputs: Map<string, string>
