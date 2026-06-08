@@ -1,7 +1,7 @@
 import { SeverityNumber } from "@opentelemetry/api-logs"
 import { SpanStatusCode, trace } from "@opentelemetry/api"
 import type { EventSessionCreated, EventSessionIdle, EventSessionError, EventSessionStatus } from "@opencode-ai/sdk"
-import { AGENT_NAME, OpenInferenceSpanKind, SemanticConventions, SESSION_ID } from "@arizeai/openinference-semantic-conventions"
+import { AGENT_NAME, MimeType, OpenInferenceSpanKind, OUTPUT_MIME_TYPE, OUTPUT_VALUE, SemanticConventions, SESSION_ID } from "@arizeai/openinference-semantic-conventions"
 import { errorSummary, setBoundedMap, isMetricEnabled, isTraceEnabled } from "../util.ts"
 import type { HandlerContext } from "../types.ts"
 
@@ -64,6 +64,19 @@ function sweepSession(sessionID: string, ctx: HandlerContext) {
       span.span?.setStatus({ code: SpanStatusCode.ERROR, message: "session ended before tool completed" })
       span.span?.end()
       ctx.pendingToolSpans.delete(key)
+    }
+  }
+  for (const [key, span] of ctx.pendingReasoningSpans) {
+    if (span.sessionID === sessionID) {
+      span.span?.setAttributes({
+        [OUTPUT_VALUE]: span.text,
+        [OUTPUT_MIME_TYPE]: MimeType.TEXT,
+        "opencode.reasoning.text_length": span.text.length,
+        "opencode.reasoning.truncated": span.truncated,
+      })
+      span.span?.setStatus({ code: SpanStatusCode.ERROR, message: "session ended before reasoning completed" })
+      span.span?.end()
+      ctx.pendingReasoningSpans.delete(key)
     }
   }
   ctx.sessionInputs.delete(sessionID)

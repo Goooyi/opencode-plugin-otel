@@ -32,6 +32,7 @@ import type { HandlerContext } from "../types.ts"
 
 const OPENINFERENCE_SPAN_KIND = SemanticConventions.OPENINFERENCE_SPAN_KIND
 const LLM_FINISH_REASON = "llm.finish_reason"
+const MAX_REASONING_TEXT_CHARS = 12000
 
 type SubtaskPart = {
   type: "subtask"
@@ -40,6 +41,122 @@ type SubtaskPart = {
   prompt: string
   description: string
   agent: string
+}
+
+type ReasoningPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "reasoning"
+  text: string
+  metadata?: Record<string, unknown>
+  time: {
+    start: number
+    end?: number
+  }
+}
+
+export type EventMessagePartDelta = {
+  id?: string
+  type: "message.part.delta"
+  properties: {
+    sessionID: string
+    messageID: string
+    partID: string
+    field: string
+    delta: string
+  }
+}
+
+function reasoningKey(sessionID: string, messageID: string, partID: string): string {
+  return `${sessionID}:${messageID}:${partID}`
+}
+
+function boundedReasoningText(text: string): { text: string; truncated: boolean } {
+  if (text.length <= MAX_REASONING_TEXT_CHARS) return { text, truncated: false }
+  return { text: text.slice(0, MAX_REASONING_TEXT_CHARS), truncated: true }
+}
+
+function appendReasoningText(existing: string, delta: string): { text: string; truncated: boolean } {
+  if (existing.length >= MAX_REASONING_TEXT_CHARS) return { text: existing, truncated: true }
+  const next = `${existing}${delta}`
+  return boundedReasoningText(next)
+}
+
+function ensureReasoningPending(
+  sessionID: string,
+  messageID: string,
+  partID: string,
+  startMs: number,
+  ctx: HandlerContext,
+) {
+  const key = reasoningKey(sessionID, messageID, partID)
+  const existing = ctx.pendingReasoningSpans.get(key)
+  if (existing) return existing
+
+  const pending = {
+    sessionID,
+    messageID,
+    partID,
+    startMs,
+    text: "",
+    truncated: false,
+    span: undefined,
+  }
+  setBoundedMap(ctx.pendingReasoningSpans, key, pending)
+  ctx.log("debug", "otel: reasoning part observed", { sessionID, messageID, partID, key })
+  return pending
+}
+
+function ensureReasoningOtelSpan(pending: ReturnType<typeof ensureReasoningPending>, ctx: HandlerContext) {
+  if (pending.span || !isTraceEnabled("reasoning", ctx) || !pending.text) return
+  const messageSpan = ctx.messageSpans.get(`${pending.sessionID}:${pending.messageID}`)
+  const sessionSpan = ctx.sessionSpans.get(pending.sessionID)
+  const baseCtx = ctx.rootContext()
+  const parentCtx = messageSpan
+    ? trace.setSpan(baseCtx, messageSpan)
+    : sessionSpan
+      ? trace.setSpan(baseCtx, sessionSpan)
+      : baseCtx
+  pending.span = ctx.tracer.startSpan(
+    `${ctx.tracePrefix}reasoning`,
+    {
+      startTime: pending.startMs,
+      kind: SpanKind.INTERNAL,
+      attributes: {
+        [OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.CHAIN,
+        [SESSION_ID]: pending.sessionID,
+        [INPUT_VALUE]: JSON.stringify({
+          sessionID: pending.sessionID,
+          messageID: pending.messageID,
+          partID: pending.partID,
+        }),
+        [INPUT_MIME_TYPE]: MimeType.JSON,
+        "opencode.message.id": pending.messageID,
+        "opencode.reasoning.part_id": pending.partID,
+        "opencode.reasoning.text_length": pending.text.length,
+        "opencode.reasoning.truncated": pending.truncated,
+        ...ctx.commonAttrs,
+      },
+    },
+    parentCtx,
+  )
+  ctx.log("debug", "otel: reasoning span started", {
+    sessionID: pending.sessionID,
+    messageID: pending.messageID,
+    partID: pending.partID,
+  })
+}
+
+function endReasoningSpan(key: string, pending: ReturnType<typeof ensureReasoningPending>, endMs: number) {
+  pending.span?.setAttributes({
+    [OUTPUT_VALUE]: pending.text,
+    [OUTPUT_MIME_TYPE]: MimeType.TEXT,
+    "opencode.reasoning.text_length": pending.text.length,
+    "opencode.reasoning.truncated": pending.truncated,
+  })
+  pending.span?.setStatus({ code: SpanStatusCode.OK })
+  pending.span?.end(endMs)
 }
 
 /**
@@ -210,6 +327,29 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
  */
 export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: HandlerContext) {
   const part = e.properties.part
+
+  if (part.type === "reasoning") {
+    const reasoning = part as unknown as ReasoningPart
+    const key = reasoningKey(reasoning.sessionID, reasoning.messageID, reasoning.id)
+    const pending = ensureReasoningPending(reasoning.sessionID, reasoning.messageID, reasoning.id, reasoning.time.start, ctx)
+    if (reasoning.text || !pending.text) {
+      const next = boundedReasoningText(reasoning.text)
+      pending.text = next.text
+      pending.truncated = next.truncated
+    }
+    ensureReasoningOtelSpan(pending, ctx)
+    pending.span?.setAttributes({
+      "opencode.reasoning.text_length": pending.text.length,
+      "opencode.reasoning.truncated": pending.truncated,
+      "opencode.reasoning.has_metadata": !!reasoning.metadata,
+    })
+    if (reasoning.time.end !== undefined) {
+      endReasoningSpan(key, pending, reasoning.time.end)
+      ctx.pendingReasoningSpans.delete(key)
+      ctx.log("debug", "otel: reasoning span ended", { sessionID: reasoning.sessionID, messageID: reasoning.messageID, partID: reasoning.id })
+    }
+    return
+  }
 
   if (part.type === "text") {
     const key = `${part.sessionID}:${part.messageID}`
@@ -389,6 +529,27 @@ export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: Handle
       duration_ms,
     })
   }
+}
+
+/**
+ * Accumulates streamed reasoning text emitted by OpenCode before the full reasoning part
+ * is written back. The span itself remains a single child observation of the LLM span.
+ */
+export function handleMessagePartDelta(e: EventMessagePartDelta, ctx: HandlerContext) {
+  const { sessionID, messageID, partID, field, delta } = e.properties
+  if (field !== "text") return
+  const key = reasoningKey(sessionID, messageID, partID)
+  const pending = ctx.pendingReasoningSpans.get(key)
+  if (!pending) return
+  const next = appendReasoningText(pending.text, delta)
+  pending.text = next.text
+  pending.truncated = pending.truncated || next.truncated
+  ensureReasoningOtelSpan(pending, ctx)
+  pending.span?.setAttributes({
+    "opencode.reasoning.text_length": pending.text.length,
+    "opencode.reasoning.truncated": pending.truncated,
+  })
+  ctx.log("debug", "otel: reasoning delta recorded", { sessionID, messageID, partID, key, deltaLength: delta.length })
 }
 
 /**

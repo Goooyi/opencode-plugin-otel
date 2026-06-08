@@ -11,13 +11,14 @@ import {
   LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ,
   LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE,
   OpenInferenceSpanKind,
+  OUTPUT_VALUE,
   SemanticConventions,
   SESSION_ID,
   TOOL_NAME,
 } from "@arizeai/openinference-semantic-conventions"
 import type { Span } from "@opentelemetry/api"
 import { handleSessionCreated, handleSessionIdle, handleSessionError } from "../../src/handlers/session.ts"
-import { handleMessageUpdated, handleMessagePartUpdated, startMessageSpan } from "../../src/handlers/message.ts"
+import { handleMessageUpdated, handleMessagePartUpdated, handleMessagePartDelta, startMessageSpan, type EventMessagePartDelta } from "../../src/handlers/message.ts"
 import { remoteParentContext } from "../../src/trace-context.ts"
 import { makeCtx, makeTracer, type SpySpan } from "../helpers.ts"
 import type {
@@ -94,6 +95,54 @@ function makeToolPartUpdated(
     type: "message.part.updated",
     properties: { part: { type: "tool", sessionID, callID, tool: overrides.tool ?? "bash", state } },
   } as unknown as EventMessagePartUpdated
+}
+
+function makeReasoningPartUpdated(
+  overrides: {
+    id?: string
+    sessionID?: string
+    messageID?: string
+    text?: string
+    startMs?: number
+    endMs?: number
+    metadata?: Record<string, unknown>
+  } = {},
+): EventMessagePartUpdated {
+  const start = overrides.startMs ?? 1000
+  return {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: overrides.id ?? "reasoning_1",
+        type: "reasoning",
+        sessionID: overrides.sessionID ?? "ses_1",
+        messageID: overrides.messageID ?? "msg_1",
+        text: overrides.text ?? "",
+        metadata: overrides.metadata,
+        time: {
+          start,
+          ...(overrides.endMs !== undefined ? { end: overrides.endMs } : {}),
+        },
+      },
+    },
+  } as unknown as EventMessagePartUpdated
+}
+
+function makeReasoningPartDelta(
+  delta: string,
+  overrides: { id?: string; sessionID?: string; messageID?: string; partID?: string; field?: string } = {},
+): EventMessagePartDelta {
+  return {
+    id: overrides.id ?? "evt_delta",
+    type: "message.part.delta",
+    properties: {
+      sessionID: overrides.sessionID ?? "ses_1",
+      messageID: overrides.messageID ?? "msg_1",
+      partID: overrides.partID ?? "reasoning_1",
+      field: overrides.field ?? "text",
+      delta,
+    },
+  }
 }
 
 describe("session spans", () => {
@@ -398,6 +447,64 @@ describe("message (LLM) spans", () => {
   })
 })
 
+describe("reasoning spans", () => {
+  test("reasoning span is parented to the active llm span when available", () => {
+    const { ctx, tracer } = makeCtx()
+    handleSessionCreated(makeSessionCreated("ses_1"), ctx)
+    startMessageSpan("ses_1", "msg_1", "claude", "anthropic", 1000, ctx)
+    handleMessagePartUpdated(makeReasoningPartUpdated({ text: "thinking", startMs: 1100 }), ctx)
+    expect(tracer.spans).toHaveLength(3)
+    expect(tracer.spans[2]!.name).toBe("opencode.reasoning")
+    expect(tracer.spans[2]!.parentSpan).toBe(tracer.spans[1])
+  })
+
+  test("reasoning deltas are aggregated into one ended span", () => {
+    const { ctx, tracer } = makeCtx()
+    startMessageSpan("ses_1", "msg_1", "claude", "anthropic", 1000, ctx)
+    handleMessagePartUpdated(makeReasoningPartUpdated({ startMs: 1100 }), ctx)
+    handleMessagePartDelta(makeReasoningPartDelta("first "), ctx)
+    handleMessagePartDelta(makeReasoningPartDelta("second"), ctx)
+    handleMessagePartUpdated(makeReasoningPartUpdated({ text: "first second", startMs: 1100, endMs: 1300 }), ctx)
+    const reasoningSpan = tracer.spans.find(s => s.name === "opencode.reasoning")!
+    expect(reasoningSpan.ended).toBe(true)
+    expect(reasoningSpan.endTime).toBe(1300)
+    expect(reasoningSpan.status.code).toBe(SpanStatusCode.OK)
+    expect(reasoningSpan.attributes[OUTPUT_VALUE]).toBe("first second")
+    expect(reasoningSpan.attributes["opencode.reasoning.text_length"]).toBe("first second".length)
+    expect(ctx.pendingReasoningSpans.size).toBe(0)
+  })
+
+  test("text deltas without a known reasoning part are ignored", () => {
+    const { ctx, tracer } = makeCtx()
+    startMessageSpan("ses_1", "msg_1", "claude", "anthropic", 1000, ctx)
+    handleMessagePartDelta(makeReasoningPartDelta("final answer text", { partID: "text_part_1" }), ctx)
+    expect(tracer.spans.find(s => s.name === "opencode.reasoning")).toBeUndefined()
+    expect(ctx.pendingReasoningSpans.size).toBe(0)
+  })
+
+  test("reasoning span does not duplicate token usage from parent llm span", () => {
+    const { ctx, tracer } = makeCtx()
+    startMessageSpan("ses_1", "msg_1", "claude", "anthropic", 1000, ctx)
+    handleMessagePartUpdated(makeReasoningPartUpdated({ text: "thinking", startMs: 1100, endMs: 1200 }), ctx)
+    handleMessageUpdated(makeAssistantMessageUpdated({
+      id: "msg_1",
+      tokens: { input: 200, output: 80, reasoning: 25, cache: { read: 0, write: 0 } },
+    }), ctx)
+    const llmSpan = tracer.spans.find(s => s.name === "opencode.llm")!
+    const reasoningSpan = tracer.spans.find(s => s.name === "opencode.reasoning")!
+    expect(llmSpan.attributes[LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING]).toBe(25)
+    expect(reasoningSpan.attributes[LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING]).toBeUndefined()
+    expect(reasoningSpan.attributes[LLM_TOKEN_COUNT_PROMPT]).toBeUndefined()
+    expect(reasoningSpan.attributes[LLM_TOKEN_COUNT_COMPLETION]).toBeUndefined()
+  })
+
+  test("reasoning trace can be disabled independently", () => {
+    const { ctx, tracer } = makeCtx("proj_test", [], ["reasoning"])
+    handleMessagePartUpdated(makeReasoningPartUpdated({ text: "thinking", endMs: 1200 }), ctx)
+    expect(tracer.spans).toHaveLength(0)
+  })
+})
+
 describe("orphaned span cleanup", () => {
   test("pending tool spans are ended with ERROR on session.idle", () => {
     const { ctx, tracer } = makeCtx()
@@ -452,6 +559,21 @@ describe("orphaned span cleanup", () => {
     const msgSpan = tracer.spans.find(s => s.name === "opencode.llm")!
     expect(msgSpan.ended).toBe(true)
     expect(msgSpan.status.code).toBe(SpanStatusCode.ERROR)
+  })
+
+  test("pending reasoning spans are ended with ERROR on session.idle", () => {
+    const { ctx, tracer } = makeCtx()
+    handleSessionCreated(makeSessionCreated("ses_1"), ctx)
+    startMessageSpan("ses_1", "msg_1", "claude", "anthropic", 1000, ctx)
+    handleMessagePartUpdated(makeReasoningPartUpdated({ sessionID: "ses_1", messageID: "msg_1", startMs: 1100 }), ctx)
+    handleMessagePartDelta(makeReasoningPartDelta("partial reasoning"), ctx)
+    expect(ctx.pendingReasoningSpans.size).toBe(1)
+    handleSessionIdle(makeSessionIdle("ses_1"), ctx)
+    expect(ctx.pendingReasoningSpans.size).toBe(0)
+    const reasoningSpan = tracer.spans.find(s => s.name === "opencode.reasoning")!
+    expect(reasoningSpan.ended).toBe(true)
+    expect(reasoningSpan.status.code).toBe(SpanStatusCode.ERROR)
+    expect(reasoningSpan.attributes[OUTPUT_VALUE]).toBe("partial reasoning")
   })
 })
 

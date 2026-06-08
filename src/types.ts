@@ -7,7 +7,7 @@ export const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const
 /** Union of supported log level names. */
 export type Level = keyof typeof LEVELS
 
-/** Maximum number of entries kept in `pendingToolSpans` and `pendingPermissions` maps. */
+/** Maximum number of entries kept in `pendingToolSpans`, `pendingReasoningSpans`, and `pendingPermissions` maps. */
 export const MAX_PENDING = 500
 
 /** Structured logger forwarded to the opencode `client.app.log` API. */
@@ -25,6 +25,17 @@ export type PendingToolSpan = {
   tool: string
   sessionID: string
   startMs: number
+  span?: Span
+}
+
+/** In-flight reasoning content tracked between reasoning part updates and stream deltas. */
+export type PendingReasoningSpan = {
+  sessionID: string
+  messageID: string
+  partID: string
+  startMs: number
+  text: string
+  truncated: boolean
   span?: Span
 }
 
@@ -70,6 +81,7 @@ export type HandlerContext = {
   instruments: Instruments
   commonAttrs: CommonAttrs
   pendingToolSpans: Map<string, PendingToolSpan>
+  pendingReasoningSpans: Map<string, PendingReasoningSpan>
   pendingPermissions: Map<string, PendingPermission>
   sessionTotals: Map<string, SessionTotals>
   sessionDiffTotals: Map<string, { additions: number; deletions: number }>

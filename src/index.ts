@@ -22,7 +22,7 @@ import { probeEndpoint } from "./probe.ts"
 import { setupOtel, createInstruments } from "./otel.ts"
 import { remoteParentContext } from "./trace-context.ts"
 import { handleSessionCreated, handleSessionIdle, handleSessionError, handleSessionStatus } from "./handlers/session.ts"
-import { handleMessageUpdated, handleMessagePartUpdated, startMessageSpan } from "./handlers/message.ts"
+import { handleMessageUpdated, handleMessagePartUpdated, handleMessagePartDelta, startMessageSpan, type EventMessagePartDelta } from "./handlers/message.ts"
 import { handlePermissionUpdated, handlePermissionReplied } from "./handlers/permission.ts"
 import { handleSessionDiff, handleCommandExecuted } from "./handlers/activity.ts"
 
@@ -98,6 +98,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
   }
   const rootContext = remoteContext ? () => remoteContext : () => ROOT_CONTEXT
   const pendingToolSpans = new Map()
+  const pendingReasoningSpans = new Map()
   const pendingPermissions = new Map()
   const sessionTotals = new Map()
   const sessionDiffTotals = new Map()
@@ -126,6 +127,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
     instruments,
     commonAttrs,
     pendingToolSpans,
+    pendingReasoningSpans,
     pendingPermissions,
     sessionTotals,
     sessionDiffTotals,
@@ -218,7 +220,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
     }),
 
     event: safe("event", async ({ event }) => {
-      switch (event.type) {
+      switch (event.type as string) {
         case "session.created":
           await handleSessionCreated(event as EventSessionCreated, ctx)
           break
@@ -261,6 +263,9 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
         }
         case "message.part.updated":
           await handleMessagePartUpdated(event as EventMessagePartUpdated, ctx)
+          break
+        case "message.part.delta":
+          handleMessagePartDelta(event as unknown as EventMessagePartDelta, ctx)
           break
       }
     }),

@@ -32,7 +32,7 @@ export function isMetricEnabled(name: string, ctx: { disabledMetrics: Set<string
 
 /**
  * Returns `true` if the trace type is not in the disabled set.
- * Valid names are `"session"`, `"llm"`, and `"tool"`.
+ * Valid names are `"session"`, `"llm"`, `"tool"`, and `"reasoning"`.
  */
 export function isTraceEnabled(name: string, ctx: { disabledTraces: Set<string> }): boolean {
   return !ctx.disabledTraces.has(name)
