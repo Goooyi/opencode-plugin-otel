@@ -92,10 +92,10 @@ function makeToolPartUpdated(
 
   const state =
     status === "running"
-      ? { status: "running", time: { start } }
+      ? { status: "running", input: {}, time: { start } }
       : status === "completed"
-        ? { status: "completed", time: { start, end }, output: "result output" }
-        : { status: "error", time: { start, end }, error: "tool failed" }
+        ? { status: "completed", input: {}, time: { start, end }, output: "result output" }
+        : { status: "error", input: {}, time: { start, end }, error: "tool failed" }
 
   return {
     type: "message.part.updated",
@@ -103,6 +103,7 @@ function makeToolPartUpdated(
       part: {
         type: "tool",
         sessionID,
+        messageID: "msg_1",
         callID,
         tool: overrides.tool ?? "bash",
         state,
@@ -309,9 +310,10 @@ describe("handleMessagePartUpdated", () => {
         part: {
           type: "tool",
           sessionID: "ses_1",
+          messageID: "msg_1",
           callID: "call_1",
           tool: "bash",
-          state: { status: "completed", time: { start: 1000, end: undefined }, output: "ok" },
+          state: { status: "completed", input: {}, time: { start: 1000, end: undefined }, output: "ok" },
         },
       },
     } as unknown as EventMessagePartUpdated

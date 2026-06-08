@@ -28,7 +28,7 @@ import {
   TOOL_PARAMETERS,
 } from "@arizeai/openinference-semantic-conventions"
 import { errorSummary, setBoundedMap, accumulateSessionTotals, isMetricEnabled, isTraceEnabled } from "../util.ts"
-import type { HandlerContext } from "../types.ts"
+import type { HandlerContext, MessageToolCall } from "../types.ts"
 
 const OPENINFERENCE_SPAN_KIND = SemanticConventions.OPENINFERENCE_SPAN_KIND
 const LLM_FINISH_REASON = "llm.finish_reason"
@@ -54,6 +54,71 @@ type ReasoningPart = {
     start: number
     end?: number
   }
+}
+
+function messageKey(sessionID: string, messageID: string): string {
+  return `${sessionID}:${messageID}`
+}
+
+function toolSpanKey(toolPart: ToolPart): string {
+  return `${toolPart.sessionID}:${toolPart.callID}`
+}
+
+function nonEmptyToolInput(input: Record<string, unknown>): Record<string, unknown> | undefined {
+  return Object.keys(input).length > 0 ? input : undefined
+}
+
+function recordMessageToolCall(toolPart: ToolPart, ctx: HandlerContext) {
+  const key = messageKey(toolPart.sessionID, toolPart.messageID)
+  const calls = ctx.messageToolCalls.get(key) ?? []
+  const input = nonEmptyToolInput(toolPart.state.input)
+  const existingIndex = calls.findIndex((call) => call.id === toolPart.callID)
+  if (existingIndex >= 0) {
+    if (input && !calls[existingIndex]!.input) {
+      const next = [...calls]
+      next[existingIndex] = { ...next[existingIndex]!, input }
+      setBoundedMap(ctx.messageToolCalls, key, next)
+    }
+    return
+  }
+  const next: MessageToolCall[] = [
+    ...calls,
+    {
+      id: toolPart.callID,
+      name: toolPart.tool,
+      ...(input ? { input } : {}),
+    },
+  ]
+  setBoundedMap(ctx.messageToolCalls, key, next)
+}
+
+function toolCallOutput(toolCalls: MessageToolCall[]) {
+  return {
+    toolCalls: toolCalls.map((call) => ({
+      id: call.id,
+      name: call.name,
+      ...(call.input ? { input: call.input } : {}),
+    })),
+  }
+}
+
+function openAiToolCalls(toolCalls: MessageToolCall[]) {
+  return toolCalls.map((call) => ({
+    id: call.id,
+    type: "function",
+    function: {
+      name: call.name,
+      arguments: JSON.stringify(call.input ?? {}),
+    },
+  }))
+}
+
+function parentContextForMessage(sessionID: string, messageID: string, ctx: HandlerContext) {
+  const baseCtx = ctx.rootContext()
+  const msgSpan = ctx.messageSpans.get(messageKey(sessionID, messageID))
+  if (msgSpan) return trace.setSpan(baseCtx, msgSpan)
+  const sessionSpan = ctx.sessionSpans.get(sessionID)
+  return sessionSpan ? trace.setSpan(baseCtx, sessionSpan) : baseCtx
 }
 
 export type EventMessagePartDelta = {
@@ -222,10 +287,19 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
     cost_usd: assistant.cost,
   })
 
-  const msgKey = `${sessionID}:${assistant.id}`
+  const msgKey = messageKey(sessionID, assistant.id)
   const msgSpan = ctx.messageSpans.get(msgKey)
   if (msgSpan) {
     const outputText = ctx.messageOutputs.get(msgKey)
+    const toolCalls = ctx.messageToolCalls.get(msgKey) ?? []
+    const hasToolCalls = toolCalls.length > 0
+    const outputMessage = hasToolCalls
+      ? {
+          role: "assistant",
+          ...(outputText ? { content: outputText } : {}),
+          tool_calls: openAiToolCalls(toolCalls),
+        }
+      : { role: "assistant", content: outputText ?? "" }
     msgSpan.setAttributes({
       [LLM_TOKEN_COUNT_PROMPT]: assistant.tokens.input,
       [LLM_TOKEN_COUNT_COMPLETION]: assistant.tokens.output,
@@ -239,7 +313,18 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
         ? {
             [OUTPUT_VALUE]: outputText,
             [OUTPUT_MIME_TYPE]: MimeType.TEXT,
-            [LLM_OUTPUT_MESSAGES]: JSON.stringify([{ role: "assistant", content: outputText }]),
+            [LLM_OUTPUT_MESSAGES]: JSON.stringify([outputMessage]),
+          }
+        : hasToolCalls
+          ? {
+              [OUTPUT_VALUE]: JSON.stringify(toolCallOutput(toolCalls)),
+              [OUTPUT_MIME_TYPE]: MimeType.JSON,
+              [LLM_OUTPUT_MESSAGES]: JSON.stringify([outputMessage]),
+            }
+          : {}),
+      ...(hasToolCalls
+        ? {
+            "opencode.tool_calls": JSON.stringify(toolCallOutput(toolCalls)),
           }
         : {}),
       cost_usd: assistant.cost,
@@ -253,6 +338,7 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
     msgSpan.end(assistant.time.completed)
     ctx.messageSpans.delete(msgKey)
     ctx.messageOutputs.delete(msgKey)
+    ctx.messageToolCalls.delete(msgKey)
   }
 
   if (assistant.error) {
@@ -352,7 +438,7 @@ export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: Handle
   }
 
   if (part.type === "text") {
-    const key = `${part.sessionID}:${part.messageID}`
+    const key = messageKey(part.sessionID, part.messageID)
     ctx.messageOutputs.set(key, `${ctx.messageOutputs.get(key) ?? ""}${part.text}`)
     return
   }
@@ -390,16 +476,13 @@ export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: Handle
 
   if (part.type === "tool") {
     const toolPart = part as ToolPart
-    const key = `${toolPart.sessionID}:${toolPart.callID}`
+    const key = toolSpanKey(toolPart)
+    recordMessageToolCall(toolPart, ctx)
 
     if (toolPart.state.status === "running") {
       const toolSpan = isTraceEnabled("tool", ctx)
         ? (() => {
-            const sessionSpan = ctx.sessionSpans.get(toolPart.sessionID)
-            const baseCtx = ctx.rootContext()
-            const parentCtx = sessionSpan
-              ? trace.setSpan(baseCtx, sessionSpan)
-              : baseCtx
+            const parentCtx = parentContextForMessage(toolPart.sessionID, toolPart.messageID, ctx)
             return ctx.tracer.startSpan(
               `${ctx.tracePrefix}tool.${toolPart.tool}`,
               {
@@ -423,6 +506,7 @@ export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: Handle
       setBoundedMap(ctx.pendingToolSpans, key, {
         tool: toolPart.tool,
         sessionID: toolPart.sessionID,
+        messageID: toolPart.messageID,
         startMs: toolPart.state.time.start,
         span: toolSpan,
       })
@@ -451,11 +535,7 @@ export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: Handle
 
     if (isTraceEnabled("tool", ctx)) {
       const toolSpan = pending?.span ?? (() => {
-        const sessionSpan = ctx.sessionSpans.get(toolPart.sessionID)
-        const baseCtx = ctx.rootContext()
-        const parentCtx = sessionSpan
-          ? trace.setSpan(baseCtx, sessionSpan)
-          : baseCtx
+        const parentCtx = parentContextForMessage(toolPart.sessionID, toolPart.messageID, ctx)
         return ctx.tracer.startSpan(
           `${ctx.tracePrefix}tool.${toolPart.tool}`,
           {

@@ -105,8 +105,8 @@ describe("handleSessionIdle", () => {
     const t = makeTracer()
     const span1 = t.startSpan("tool") as unknown as Span
     const span2 = t.startSpan("tool") as unknown as Span
-    ctx.pendingToolSpans.set("ses_1:call_1", { tool: "bash", sessionID: "ses_1", startMs: 0, span: span1 })
-    ctx.pendingToolSpans.set("ses_other:call_2", { tool: "bash", sessionID: "ses_other", startMs: 0, span: span2 })
+    ctx.pendingToolSpans.set("ses_1:call_1", { tool: "bash", sessionID: "ses_1", messageID: "msg_1", startMs: 0, span: span1 })
+    ctx.pendingToolSpans.set("ses_other:call_2", { tool: "bash", sessionID: "ses_other", messageID: "msg_2", startMs: 0, span: span2 })
     handleSessionIdle(makeSessionIdle("ses_1"), ctx)
     expect(ctx.pendingToolSpans.has("ses_1:call_1")).toBe(false)
     expect(ctx.pendingToolSpans.has("ses_other:call_2")).toBe(true)
@@ -181,7 +181,7 @@ describe("handleSessionError", () => {
     const t = makeTracer()
     const span = t.startSpan("tool") as unknown as Span
     ctx.pendingPermissions.set("perm_1", { type: "tool", title: "Read", sessionID: "ses_1" })
-    ctx.pendingToolSpans.set("ses_1:call_1", { tool: "bash", sessionID: "ses_1", startMs: 0, span })
+    ctx.pendingToolSpans.set("ses_1:call_1", { tool: "bash", sessionID: "ses_1", messageID: "msg_1", startMs: 0, span })
     handleSessionError(makeSessionError("ses_1"), ctx)
     expect(ctx.pendingPermissions.size).toBe(0)
     expect(ctx.pendingToolSpans.size).toBe(0)

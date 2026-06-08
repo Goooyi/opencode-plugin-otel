@@ -50,11 +50,12 @@ function makeToolPartUpdated(status: "running" | "completed"): EventMessagePartU
       part: {
         type: "tool",
         sessionID: "ses_1",
+        messageID: "msg_1",
         callID: "call_1",
         tool: "bash",
         state: status === "running"
-          ? { status: "running", time: { start: 1000 } }
-          : { status: "completed", time: { start: 1000, end: 1500 }, output: "ok" },
+          ? { status: "running", input: {}, time: { start: 1000 } }
+          : { status: "completed", input: {}, time: { start: 1000, end: 1500 }, output: "ok" },
       },
     },
   } as unknown as EventMessagePartUpdated

@@ -24,8 +24,16 @@ export type CommonAttrs = { readonly "project.id": string }
 export type PendingToolSpan = {
   tool: string
   sessionID: string
+  messageID: string
   startMs: number
   span?: Span
+}
+
+/** Tool calls requested by one assistant message before their tool spans run. */
+export type MessageToolCall = {
+  id: string
+  name: string
+  input?: Record<string, unknown>
 }
 
 /** In-flight reasoning content tracked between reasoning part updates and stream deltas. */
@@ -94,4 +102,5 @@ export type HandlerContext = {
   messageSpans: Map<string, Span>
   sessionInputs: Map<string, string>
   messageOutputs: Map<string, string>
+  messageToolCalls: Map<string, MessageToolCall[]>
 }

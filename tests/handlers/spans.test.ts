@@ -3,6 +3,7 @@ import { context, SpanStatusCode, trace, TraceFlags } from "@opentelemetry/api"
 import {
   AGENT_NAME,
   LLM_MODEL_NAME,
+  LLM_OUTPUT_MESSAGES,
   LLM_PROVIDER,
   LLM_SYSTEM,
   LLM_TOKEN_COUNT_COMPLETION,
@@ -12,6 +13,8 @@ import {
   LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE,
   OpenInferenceSpanKind,
   OUTPUT_VALUE,
+  OUTPUT_MIME_TYPE,
+  MimeType,
   SemanticConventions,
   SESSION_ID,
   TOOL_NAME,
@@ -79,21 +82,22 @@ function makeAssistantMessageUpdated(overrides: {
 
 function makeToolPartUpdated(
   status: "running" | "completed" | "error",
-  overrides: { sessionID?: string; callID?: string; tool?: string; startMs?: number; endMs?: number; output?: string } = {},
+  overrides: { sessionID?: string; callID?: string; tool?: string; input?: Record<string, unknown>; startMs?: number; endMs?: number; output?: string } = {},
 ): EventMessagePartUpdated {
   const sessionID = overrides.sessionID ?? "ses_1"
   const callID = overrides.callID ?? "call_1"
   const start = overrides.startMs ?? 1000
   const end = overrides.endMs ?? 2000
+  const input = overrides.input ?? {}
   const state =
     status === "running"
-      ? { status: "running", time: { start } }
+      ? { status: "running", input, time: { start } }
       : status === "completed"
-        ? { status: "completed", time: { start, end }, output: overrides.output ?? "ok" }
-        : { status: "error", time: { start, end }, error: "fail" }
+        ? { status: "completed", input, time: { start, end }, output: overrides.output ?? "ok" }
+        : { status: "error", input, time: { start, end }, error: "fail" }
   return {
     type: "message.part.updated",
-    properties: { part: { type: "tool", sessionID, callID, tool: overrides.tool ?? "bash", state } },
+    properties: { part: { type: "tool", sessionID, messageID: "msg_1", callID, tool: overrides.tool ?? "bash", state } },
   } as unknown as EventMessagePartUpdated
 }
 
@@ -350,6 +354,16 @@ describe("tool spans", () => {
     expect(tracer.spans[1]!.parentSpan).toBe(tracer.spans[0])
   })
 
+  test("tool span is parented to active llm span when message span is available", () => {
+    const { ctx, tracer } = makeCtx()
+    handleSessionCreated(makeSessionCreated("ses_1"), ctx)
+    startMessageSpan("ses_1", "msg_1", "claude", "anthropic", 900, ctx)
+    handleMessagePartUpdated(makeToolPartUpdated("running", { sessionID: "ses_1", startMs: 1000 }), ctx)
+    expect(tracer.spans).toHaveLength(3)
+    expect(tracer.spans[2]!.name).toBe("opencode.tool.bash")
+    expect(tracer.spans[2]!.parentSpan).toBe(tracer.spans[1])
+  })
+
   test("out-of-order tool span is parented to session span when available", () => {
     const { ctx, tracer } = makeCtx()
     handleSessionCreated(makeSessionCreated("ses_1"), ctx)
@@ -357,6 +371,16 @@ describe("tool spans", () => {
     expect(tracer.spans).toHaveLength(2)
     expect(tracer.spans[1]!.name).toBe("opencode.tool.bash")
     expect(tracer.spans[1]!.parentSpan).toBe(tracer.spans[0])
+  })
+
+  test("out-of-order tool span is parented to active llm span when message span is available", () => {
+    const { ctx, tracer } = makeCtx()
+    handleSessionCreated(makeSessionCreated("ses_1"), ctx)
+    startMessageSpan("ses_1", "msg_1", "claude", "anthropic", 900, ctx)
+    handleMessagePartUpdated(makeToolPartUpdated("completed", { sessionID: "ses_1", startMs: 500, endMs: 1500 }), ctx)
+    expect(tracer.spans).toHaveLength(3)
+    expect(tracer.spans[2]!.name).toBe("opencode.tool.bash")
+    expect(tracer.spans[2]!.parentSpan).toBe(tracer.spans[1])
   })
 })
 
@@ -426,6 +450,65 @@ describe("message (LLM) spans", () => {
     expect(span.attributes[LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING]).toBe(10)
     expect(span.attributes[LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ]).toBe(30)
     expect(span.attributes[LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE]).toBe(5)
+  })
+
+  test("handleMessageUpdated records tool-call-only llm output", () => {
+    const { ctx, tracer } = makeCtx()
+    startMessageSpan("ses_1", "msg_1", "claude-3-5-sonnet", "anthropic", 1000, ctx)
+    handleMessagePartUpdated(makeToolPartUpdated("running", { tool: "read_case_summary" }), ctx)
+    handleMessageUpdated(
+      makeAssistantMessageUpdated({
+        id: "msg_1",
+        tokens: { input: 200, output: 25, reasoning: 10, cache: { read: 0, write: 0 } },
+      }),
+      ctx,
+    )
+    const span = tracer.spans[0]!
+    expect(span.attributes[OUTPUT_MIME_TYPE]).toBe(MimeType.JSON)
+    expect(JSON.parse(String(span.attributes[OUTPUT_VALUE]))).toEqual({
+      toolCalls: [
+        {
+          id: "call_1",
+          name: "read_case_summary",
+        },
+      ],
+    })
+    expect(JSON.parse(String(span.attributes[LLM_OUTPUT_MESSAGES]))).toEqual([
+      {
+        role: "assistant",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: {
+              name: "read_case_summary",
+              arguments: "{}",
+            },
+          },
+        ],
+      },
+    ])
+    expect(ctx.messageToolCalls.has("ses_1:msg_1")).toBe(false)
+  })
+
+  test("handleMessageUpdated includes non-empty tool-call input in llm output", () => {
+    const { ctx, tracer } = makeCtx()
+    startMessageSpan("ses_1", "msg_1", "claude-3-5-sonnet", "anthropic", 1000, ctx)
+    handleMessagePartUpdated(makeToolPartUpdated("running", { tool: "read_case_summary", input: { compact: true } }), ctx)
+    handleMessageUpdated(makeAssistantMessageUpdated({ id: "msg_1" }), ctx)
+    const span = tracer.spans[0]!
+    expect(JSON.parse(String(span.attributes[OUTPUT_VALUE]))).toEqual({
+      toolCalls: [
+        {
+          id: "call_1",
+          name: "read_case_summary",
+          input: { compact: true },
+        },
+      ],
+    })
+    expect(JSON.parse(String(span.attributes[LLM_OUTPUT_MESSAGES]))[0].tool_calls[0].function.arguments).toBe(
+      "{\"compact\":true}",
+    )
   })
 
   test("handleMessageUpdated no-ops span handling when no span exists for messageID", () => {
@@ -522,7 +605,7 @@ describe("orphaned span cleanup", () => {
     const { ctx } = makeCtx()
     const t = makeTracer()
     const span = t.startSpan("tool") as unknown as Span
-    ctx.pendingToolSpans.set("ses_other:call_1", { tool: "bash", sessionID: "ses_other", startMs: 0, span })
+    ctx.pendingToolSpans.set("ses_other:call_1", { tool: "bash", sessionID: "ses_other", messageID: "msg_1", startMs: 0, span })
     handleSessionCreated(makeSessionCreated("ses_1"), ctx)
     handleSessionIdle(makeSessionIdle("ses_1"), ctx)
     expect(ctx.pendingToolSpans.has("ses_other:call_1")).toBe(true)

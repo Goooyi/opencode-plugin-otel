@@ -106,6 +106,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
   const messageSpans = new Map()
   const sessionInputs = new Map()
   const messageOutputs = new Map()
+  const messageToolCalls = new Map()
   const { disabledMetrics, disabledTraces } = config
   const commonAttrs = { "project.id": project.id } as const
 
@@ -140,6 +141,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
     messageSpans,
     sessionInputs,
     messageOutputs,
+    messageToolCalls,
   }
 
   async function shutdown() {

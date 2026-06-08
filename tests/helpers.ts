@@ -208,6 +208,7 @@ export function makeCtx(projectID = "proj_test", disabledMetrics: string[] = [],
     messageSpans: new Map(),
     sessionInputs: new Map(),
     messageOutputs: new Map(),
+    messageToolCalls: new Map(),
   }
 
   return {
