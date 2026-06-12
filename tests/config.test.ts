@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { parseEnvInt, loadConfig, resolveHelperPath, resolveLogLevel, TRACE_TYPES } from "../src/config.ts"
+import { parseEnvInt, loadConfig, parseTraceAttributes, resolveHelperPath, resolveLogLevel, TRACE_TYPES } from "../src/config.ts"
 
 describe("parseEnvInt", () => {
   test("returns fallback when env var is unset", () => {
@@ -50,6 +50,7 @@ describe("loadConfig", () => {
     "OPENCODE_OTLP_HEADERS",
     "OPENCODE_OTLP_HEADERS_HELPER",
     "OPENCODE_RESOURCE_ATTRIBUTES",
+    "OPENCODE_TRACE_ATTRIBUTES",
     "OPENCODE_TRACEPARENT",
     "OPENCODE_TRACESTATE",
     "OPENCODE_OTLP_METRICS_TEMPORALITY",
@@ -134,6 +135,40 @@ describe("loadConfig", () => {
     process.env["OPENCODE_RESOURCE_ATTRIBUTES"] = "team=platform,env=prod"
     loadConfig()
     expect(process.env["OTEL_RESOURCE_ATTRIBUTES"]).toBe("team=platform,env=prod")
+  })
+
+  test("reads safe OPENCODE_TRACE_ATTRIBUTES", () => {
+    process.env["OPENCODE_TRACE_ATTRIBUTES"] = JSON.stringify({
+      "langfuse.trace.name": "support_answer/opencode/价格活动",
+      "langfuse.trace.tags": ["agent:support_answer", "runtime:opencode"],
+      "agentic_eval.job.type": "support_answer",
+      "agentic_eval.shop.id": "7107028961224716",
+      "agentic_eval.retry": 1,
+      "agentic_eval.active": true,
+      "nested.value": { ignored: true },
+    })
+    const cfg = loadConfig()
+    expect(cfg.traceAttributes["langfuse.trace.name"]).toBe("support_answer/opencode/价格活动")
+    expect(cfg.traceAttributes["langfuse.trace.tags"]).toEqual(["agent:support_answer", "runtime:opencode"])
+    expect(cfg.traceAttributes["agentic_eval.job.type"]).toBe("support_answer")
+    expect(cfg.traceAttributes["agentic_eval.shop.id"]).toBe("7107028961224716")
+    expect(cfg.traceAttributes["agentic_eval.retry"]).toBe(1)
+    expect(cfg.traceAttributes["agentic_eval.active"]).toBe(true)
+    expect(cfg.traceAttributes["nested.value"]).toBeUndefined()
+  })
+
+  test("ignores invalid OPENCODE_TRACE_ATTRIBUTES JSON and warns", () => {
+    const warnings: string[] = []
+    const origWarn = console.warn
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]))
+    try {
+      process.env["OPENCODE_TRACE_ATTRIBUTES"] = "{not-json"
+      expect(loadConfig().traceAttributes).toEqual({})
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toContain("OPENCODE_TRACE_ATTRIBUTES")
+    } finally {
+      console.warn = origWarn
+    }
   })
 
   test("reads OPENCODE trace context", () => {
@@ -300,6 +335,23 @@ describe("loadConfig", () => {
   test('disabledTraces expands numeric-style value "1" to every known trace type', () => {
     process.env["OPENCODE_DISABLE_TRACES"] = "1"
     expect(loadConfig().disabledTraces).toEqual(new Set(TRACE_TYPES))
+  })
+})
+
+describe("parseTraceAttributes", () => {
+  test("drops unsafe keys and unsupported values", () => {
+    const attrs = parseTraceAttributes(JSON.stringify({
+      "valid.key": "ok",
+      "bad key": "ignored",
+      object: { ignored: true },
+      array: ["a", "b", 1, true, { ignored: true }],
+      nan: Number.NaN,
+    }))
+    expect(attrs["valid.key"]).toBe("ok")
+    expect(attrs["bad key"]).toBeUndefined()
+    expect(attrs.object).toBeUndefined()
+    expect(attrs.array).toEqual(["a", "b"])
+    expect(attrs.nan).toBeUndefined()
   })
 })
 

@@ -1,4 +1,4 @@
-import type { Context, Counter, Gauge, Histogram, Span, Tracer } from "@opentelemetry/api"
+import type { Attributes, Context, Counter, Gauge, Histogram, Span, Tracer } from "@opentelemetry/api"
 import type { LogRecord } from "@opentelemetry/api-logs"
 
 /** Numeric priority map for log levels; higher value = higher severity. */
@@ -17,8 +17,8 @@ export type PluginLogger = (
   extra?: Record<string, unknown>,
 ) => Promise<void>
 
-/** OTel resource attributes common to every emitted log and metric. */
-export type CommonAttrs = { readonly "project.id": string }
+/** OTel span/metric attributes common to every emitted signal. */
+export type CommonAttrs = Attributes & { readonly "project.id": string }
 
 /** In-flight tool execution tracked between `running` and `completed`/`error` part updates. */
 export type PendingToolSpan = {

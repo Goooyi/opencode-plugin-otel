@@ -1,3 +1,4 @@
+import type { Attributes, AttributeValue } from "@opentelemetry/api"
 import { LEVELS, type Level } from "./types.ts"
 
 /** Accepted values for `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`. */
@@ -8,6 +9,10 @@ export const TRACE_TYPES = ["session", "llm", "tool", "reasoning"] as const
 
 const VALID_TEMPORALITIES: ReadonlySet<MetricsTemporality> = new Set<MetricsTemporality>(["cumulative", "delta", "lowmemory"])
 const TRACE_DISABLE_ALL_VALUES = new Set(["all", "*", "true", "1"])
+const TRACE_ATTRIBUTE_KEY = /^[a-zA-Z0-9_.-]{1,128}$/
+const MAX_TRACE_ATTRIBUTES = 64
+const MAX_TRACE_ATTRIBUTE_STRING_LENGTH = 1000
+const MAX_TRACE_ATTRIBUTE_ARRAY_LENGTH = 32
 
 /** Configuration values resolved from `OPENCODE_*` environment variables. */
 export type PluginConfig = {
@@ -21,6 +26,7 @@ export type PluginConfig = {
   otlpHeaders: string | undefined
   otlpHeadersHelper: string | undefined
   resourceAttributes: string | undefined
+  traceAttributes: Attributes
   traceparent: string | undefined
   tracestate: string | undefined
   metricsTemporality: MetricsTemporality | undefined
@@ -56,6 +62,44 @@ function parseDisabledTraces(raw: string | undefined): Set<string> {
   return new Set(values)
 }
 
+/** Parses safe span attributes from OPENCODE_TRACE_ATTRIBUTES JSON. */
+export function parseTraceAttributes(raw: string | undefined): Attributes {
+  if (!raw) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    console.warn("[opencode-plugin-otel] Invalid OPENCODE_TRACE_ATTRIBUTES JSON. Value ignored.")
+    return {}
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+
+  const attributes: Attributes = {}
+  for (const [key, value] of Object.entries(parsed).slice(0, MAX_TRACE_ATTRIBUTES)) {
+    if (!TRACE_ATTRIBUTE_KEY.test(key)) continue
+    const normalized = normalizeTraceAttributeValue(value)
+    if (normalized !== undefined) attributes[key] = normalized
+  }
+  return attributes
+}
+
+function normalizeTraceAttributeValue(value: unknown): AttributeValue | undefined {
+  if (typeof value === "string") return truncateTraceAttributeString(value)
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined
+  if (typeof value === "boolean") return value
+  if (!Array.isArray(value)) return undefined
+
+  const normalized = value
+    .slice(0, MAX_TRACE_ATTRIBUTE_ARRAY_LENGTH)
+    .filter((item): item is string => typeof item === "string")
+    .map(truncateTraceAttributeString)
+  return normalized.length > 0 ? normalized : undefined
+}
+
+function truncateTraceAttributeString(value: string): string {
+  return value.length > MAX_TRACE_ATTRIBUTE_STRING_LENGTH ? value.slice(0, MAX_TRACE_ATTRIBUTE_STRING_LENGTH) : value
+}
+
 /**
  * Reads all `OPENCODE_*` environment variables and returns the resolved plugin config.
  * Copies `OPENCODE_OTLP_HEADERS` → `OTEL_EXPORTER_OTLP_HEADERS`,
@@ -67,6 +111,7 @@ export function loadConfig(): PluginConfig {
   const otlpHeaders = process.env["OPENCODE_OTLP_HEADERS"]
   const otlpHeadersHelper = process.env["OPENCODE_OTLP_HEADERS_HELPER"]
   const resourceAttributes = process.env["OPENCODE_RESOURCE_ATTRIBUTES"]
+  const traceAttributes = parseTraceAttributes(process.env["OPENCODE_TRACE_ATTRIBUTES"])
   const traceparent = process.env["OPENCODE_TRACEPARENT"]
   const tracestate = process.env["OPENCODE_TRACESTATE"]
   const rawTemporality = process.env["OPENCODE_OTLP_METRICS_TEMPORALITY"]
@@ -113,6 +158,7 @@ export function loadConfig(): PluginConfig {
     otlpHeaders,
     otlpHeadersHelper,
     resourceAttributes,
+    traceAttributes,
     traceparent,
     tracestate,
     metricsTemporality,

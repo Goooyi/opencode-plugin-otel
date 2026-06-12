@@ -116,7 +116,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
   const messageOutputs = new Map()
   const messageToolCalls = new Map()
   const { disabledMetrics, disabledTraces } = config
-  const commonAttrs = { "project.id": project.id } as const
+  const commonAttrs = { ...config.traceAttributes, "project.id": project.id } satisfies HandlerContext["commonAttrs"]
 
   if (disabledMetrics.size > 0) {
     await log("info", "metrics disabled", { disabled: [...disabledMetrics] })
