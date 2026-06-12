@@ -157,6 +157,17 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
   process.on("SIGINT",  () => { shutdown().then(() => process.exit(0)).catch(() => process.exit(1)) })
   process.on("beforeExit", () => { shutdown().catch(() => {}) })
 
+  async function forceFlushTraces(reason: string) {
+    try {
+      await tracerProvider.forceFlush()
+    } catch (err) {
+      await log("warn", "otel: trace forceFlush failed", {
+        reason,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
   const safe = <T extends unknown[]>(
     name: string,
     fn: (...args: T) => Promise<void> | void,
@@ -266,11 +277,22 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
             )
           }
           await handleMessageUpdated(msgEvt, ctx)
+          if (info.role === "assistant" && info.time?.completed) await forceFlushTraces("message.updated")
           break
         }
-        case "message.part.updated":
-          await handleMessagePartUpdated(event as EventMessagePartUpdated, ctx)
+        case "message.part.updated": {
+          const partEvt = event as EventMessagePartUpdated
+          await handleMessagePartUpdated(partEvt, ctx)
+          const part = partEvt.properties.part
+          if (
+            part.type === "step-finish" ||
+            (part.type === "tool" && (part.state.status === "completed" || part.state.status === "error")) ||
+            (part.type === "reasoning" && part.time?.end !== undefined)
+          ) {
+            await forceFlushTraces(`message.part.updated:${part.type}`)
+          }
           break
+        }
         case "message.part.delta":
           handleMessagePartDelta(event as unknown as EventMessagePartDelta, ctx)
           break
