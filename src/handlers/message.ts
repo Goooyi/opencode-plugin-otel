@@ -342,6 +342,14 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
   })
 
   const msgKey = messageKey(sessionID, assistant.id)
+  ctx.debugStderr("message.updated completion", {
+    sessionID,
+    messageID: assistant.id,
+    finalized: ctx.finalizedMessageSpans.has(msgKey),
+    hasSpan: ctx.messageSpans.has(msgKey),
+    llmTraceEnabled: isTraceEnabled("llm", ctx),
+    disabledTraces: [...ctx.disabledTraces],
+  })
   if (!ctx.finalizedMessageSpans.has(msgKey)) {
     if (!ctx.messageSpans.has(msgKey)) {
       startMessageSpan(sessionID, assistant.id, modelID ?? "unknown", providerID ?? "unknown", assistant.time.created, ctx)
@@ -372,6 +380,14 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
         msgSpan.setStatus({ code: SpanStatusCode.OK })
       }
       msgSpan.end(assistant.time.completed)
+      ctx.debugStderr("llm span ended from message.updated", {
+        sessionID,
+        messageID: assistant.id,
+        completedAt: assistant.time.completed,
+        inputTokens: assistant.tokens.input,
+        outputTokens: assistant.tokens.output,
+        reasoningTokens: assistant.tokens.reasoning,
+      })
       ctx.messageSpans.delete(msgKey)
       ctx.messageOutputs.delete(msgKey)
       ctx.messageToolCalls.delete(msgKey)
@@ -690,6 +706,13 @@ function finalizeMessageSpanFromStep(step: StepFinishPart, ctx: HandlerContext) 
   })
   msgSpan.setStatus({ code: SpanStatusCode.OK })
   msgSpan.end(Date.now())
+  ctx.debugStderr("llm span ended from step-finish", {
+    sessionID: step.sessionID,
+    messageID: step.messageID,
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+  })
   ctx.messageSpans.delete(msgKey)
   ctx.messageOutputs.delete(msgKey)
   ctx.messageToolCalls.delete(msgKey)
@@ -733,8 +756,12 @@ export function startMessageSpan(
   startTime: number,
   ctx: HandlerContext,
 ) {
-  if (!isTraceEnabled("llm", ctx)) return
+  if (!isTraceEnabled("llm", ctx)) {
+    ctx.debugStderr("llm span skipped because llm trace disabled", { sessionID, messageID })
+    return
+  }
   const msgKey = `${sessionID}:${messageID}`
+  if (ctx.finalizedMessageSpans.has(msgKey)) return
   if (ctx.messageSpans.has(msgKey)) return
   const sessionSpan = ctx.sessionSpans.get(sessionID)
   const baseCtx = ctx.rootContext()
@@ -767,4 +794,14 @@ export function startMessageSpan(
     parentCtx,
   )
   setBoundedMap(ctx.messageSpans, msgKey, msgSpan)
+  const spanContext = msgSpan.spanContext()
+  ctx.debugStderr("llm span started", {
+    sessionID,
+    messageID,
+    traceId: spanContext.traceId,
+    spanId: spanContext.spanId,
+    sampled: Boolean(spanContext.traceFlags & 1),
+    modelID,
+    providerID,
+  })
 }

@@ -188,6 +188,7 @@ export function makeCtx(projectID = "proj_test", disabledMetrics: string[] = [],
 
   const ctx: HandlerContext = {
     log: pluginLog.fn,
+    debugStderr: () => undefined,
     emitLog: (record) => {
       if (!logsEnabled) return
       logger.emit(record)

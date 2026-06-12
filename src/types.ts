@@ -85,6 +85,7 @@ export type SessionTotals = {
 /** Shared context threaded through every event handler. */
 export type HandlerContext = {
   log: PluginLogger
+  debugStderr: (message: string, extra?: Record<string, unknown>) => void
   emitLog: (record: LogRecord) => void
   instruments: Instruments
   commonAttrs: CommonAttrs

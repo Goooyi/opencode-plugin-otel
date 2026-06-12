@@ -609,6 +609,18 @@ describe("message (LLM) spans", () => {
     expect(tracer.spans[0]!.ended).toBe(true)
   })
 
+  test("late incomplete message.updated does not restart an already finalized step span", () => {
+    const { ctx, tracer } = makeCtx()
+    handleMessagePartUpdated(makeStepPartUpdated("step-start", { messageID: "msg_step" }), ctx)
+    handleMessagePartUpdated(makeStepPartUpdated("step-finish", { messageID: "msg_step" }), ctx)
+
+    startMessageSpan("ses_1", "msg_step", "claude", "anthropic", 3000, ctx)
+
+    expect(tracer.spans).toHaveLength(1)
+    expect(tracer.spans[0]!.ended).toBe(true)
+    expect(ctx.messageSpans.has("ses_1:msg_step")).toBe(false)
+  })
+
   test("message span is parented to session span when available", () => {
     const { ctx, tracer } = makeCtx()
     handleSessionCreated(makeSessionCreated("ses_1"), ctx)

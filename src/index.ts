@@ -42,6 +42,10 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
     if (LEVELS[level] < LEVELS[minLevel]) return
     await client.app.log({ body: { service: "opencode-plugin-otel", level, message, extra } })
   }
+  const debugStderr: HandlerContext["debugStderr"] = (message, extra) => {
+    if (process.env["OPENCODE_OTEL_DEBUG_STDERR"] !== "1") return
+    console.error(`[opencode-plugin-otel] ${message}`, extra ? JSON.stringify(extra) : "")
+  }
 
   if (!config.enabled) {
     await log("info", "telemetry disabled (set OPENCODE_ENABLE_TELEMETRY to enable)")
@@ -128,6 +132,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
 
   const ctx: HandlerContext = {
     log,
+    debugStderr,
     emitLog,
     instruments,
     commonAttrs,
