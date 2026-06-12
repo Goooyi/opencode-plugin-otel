@@ -91,7 +91,10 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
     if (!config.logsEnabled) return
     logger.emit(record)
   }
-  const tracer = trace.getTracer("com.opencode")
+  // Use the provider returned by setupOtel directly. OpenCode/AI SDK may have
+  // already registered a global tracer provider, in which case trace.getTracer()
+  // can resolve to a no-op or unrelated provider.
+  const tracer = tracerProvider.getTracer("com.opencode")
   const remoteContext = remoteParentContext(config.traceparent, config.tracestate)
   if (config.traceparent && !remoteContext) {
     await log("warn", "invalid OPENCODE_TRACEPARENT ignored", { traceparentLength: config.traceparent.length })
