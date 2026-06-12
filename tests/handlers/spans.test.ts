@@ -511,13 +511,15 @@ describe("message (LLM) spans", () => {
     )
   })
 
-  test("handleMessageUpdated no-ops span handling when no span exists for messageID", () => {
+  test("handleMessageUpdated creates a one-shot span when completed message has no prior span", () => {
     const { ctx, tracer } = makeCtx()
-    const spansBefore = tracer.spans.length
-    const mapSizeBefore = ctx.messageSpans.size
-    handleMessageUpdated(makeAssistantMessageUpdated({ id: "msg_no_span" }), ctx)
-    expect(tracer.spans).toHaveLength(spansBefore)
-    expect(ctx.messageSpans.size).toBe(mapSizeBefore)
+    handleMessageUpdated(makeAssistantMessageUpdated({ id: "msg_no_span", time: { created: 1000, completed: 2000 } }), ctx)
+    expect(tracer.spans).toHaveLength(1)
+    expect(tracer.spans[0]!.name).toBe("opencode.llm")
+    expect(tracer.spans[0]!.ended).toBe(true)
+    expect(tracer.spans[0]!.startTime).toBe(1000)
+    expect(tracer.spans[0]!.endTime).toBe(2000)
+    expect(ctx.messageSpans.has("ses_1:msg_no_span")).toBe(false)
   })
 
   test("message span is parented to session span when available", () => {

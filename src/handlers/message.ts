@@ -288,6 +288,9 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
   })
 
   const msgKey = messageKey(sessionID, assistant.id)
+  if (!ctx.messageSpans.has(msgKey)) {
+    startMessageSpan(sessionID, assistant.id, modelID ?? "unknown", providerID ?? "unknown", assistant.time.created, ctx)
+  }
   const msgSpan = ctx.messageSpans.get(msgKey)
   if (msgSpan) {
     const outputText = ctx.messageOutputs.get(msgKey)
