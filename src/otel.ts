@@ -2,7 +2,7 @@ import { logs } from "@opentelemetry/api-logs"
 import { metrics, trace } from "@opentelemetry/api"
 import { LoggerProvider, BatchLogRecordProcessor } from "@opentelemetry/sdk-logs"
 import { MeterProvider, PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics"
-import { BasicTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
+import { BasicTracerProvider, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base"
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-grpc"
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-grpc"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc"
@@ -138,7 +138,7 @@ export async function setupOtel(
 
   const tracerProvider = new BasicTracerProvider({
     resource,
-    spanProcessors: [new BatchSpanProcessor(traceExporter)],
+    spanProcessors: [new SimpleSpanProcessor(traceExporter)],
   })
   trace.setGlobalTracerProvider(tracerProvider)
 
