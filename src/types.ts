@@ -100,6 +100,7 @@ export type HandlerContext = {
   rootContext: () => Context
   sessionSpans: Map<string, Span>
   messageSpans: Map<string, Span>
+  finalizedMessageSpans: Set<string>
   sessionInputs: Map<string, string>
   messageOutputs: Map<string, string>
   messageToolCalls: Map<string, MessageToolCall[]>

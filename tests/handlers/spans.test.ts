@@ -132,6 +132,57 @@ function makeReasoningPartUpdated(
   } as unknown as EventMessagePartUpdated
 }
 
+function makeStepPartUpdated(
+  type: "step-start" | "step-finish",
+  overrides: {
+    sessionID?: string
+    messageID?: string
+    reason?: string
+    tokens?: { input: number; output: number; reasoning: number; total?: number; cache: { read: number; write: number } }
+    cost?: number
+  } = {},
+): EventMessagePartUpdated {
+  const sessionID = overrides.sessionID ?? "ses_1"
+  const messageID = overrides.messageID ?? "msg_1"
+  return {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: type === "step-start" ? "step_start_1" : "step_finish_1",
+        sessionID,
+        messageID,
+        type,
+        ...(type === "step-finish"
+          ? {
+              reason: overrides.reason ?? "stop",
+              tokens: overrides.tokens ?? { input: 100, output: 10, reasoning: 5, total: 115, cache: { read: 0, write: 0 } },
+              cost: overrides.cost ?? 0.02,
+            }
+          : {}),
+      },
+    },
+  } as unknown as EventMessagePartUpdated
+}
+
+function makeTextPartUpdated(
+  text: string,
+  overrides: { sessionID?: string; messageID?: string } = {},
+): EventMessagePartUpdated {
+  return {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: "text_1",
+        sessionID: overrides.sessionID ?? "ses_1",
+        messageID: overrides.messageID ?? "msg_1",
+        type: "text",
+        text,
+        time: { start: 1100, end: 1200 },
+      },
+    },
+  } as unknown as EventMessagePartUpdated
+}
+
 function makeReasoningPartDelta(
   delta: string,
   overrides: { id?: string; sessionID?: string; messageID?: string; partID?: string; field?: string } = {},
@@ -520,6 +571,42 @@ describe("message (LLM) spans", () => {
     expect(tracer.spans[0]!.startTime).toBe(1000)
     expect(tracer.spans[0]!.endTime).toBe(2000)
     expect(ctx.messageSpans.has("ses_1:msg_no_span")).toBe(false)
+  })
+
+  test("step-start and step-finish create and finalize llm span without message.updated completion", () => {
+    const { ctx, tracer } = makeCtx()
+    handleMessagePartUpdated(makeStepPartUpdated("step-start", { messageID: "msg_step" }), ctx)
+    handleMessagePartUpdated(makeTextPartUpdated("hello from opencode", { messageID: "msg_step" }), ctx)
+    handleMessagePartUpdated(
+      makeStepPartUpdated("step-finish", {
+        messageID: "msg_step",
+        tokens: { input: 30, output: 4, reasoning: 2, total: 36, cache: { read: 10, write: 0 } },
+        cost: 0.01,
+      }),
+      ctx,
+    )
+
+    const span = tracer.spans[0]!
+    expect(span.name).toBe("opencode.llm")
+    expect(span.ended).toBe(true)
+    expect(span.status.code).toBe(SpanStatusCode.OK)
+    expect(span.attributes[OUTPUT_VALUE]).toBe("hello from opencode")
+    expect(span.attributes[OUTPUT_MIME_TYPE]).toBe(MimeType.TEXT)
+    expect(span.attributes[LLM_TOKEN_COUNT_PROMPT]).toBe(30)
+    expect(span.attributes[LLM_TOKEN_COUNT_COMPLETION]).toBe(4)
+    expect(span.attributes[LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING]).toBe(2)
+    expect(span.attributes[LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ]).toBe(10)
+    expect(ctx.messageSpans.has("ses_1:msg_step")).toBe(false)
+  })
+
+  test("completed message.updated does not duplicate span already finalized by step-finish", () => {
+    const { ctx, tracer } = makeCtx()
+    handleMessagePartUpdated(makeStepPartUpdated("step-start", { messageID: "msg_step" }), ctx)
+    handleMessagePartUpdated(makeStepPartUpdated("step-finish", { messageID: "msg_step" }), ctx)
+    handleMessageUpdated(makeAssistantMessageUpdated({ id: "msg_step", time: { created: 1000, completed: 2000 } }), ctx)
+
+    expect(tracer.spans).toHaveLength(1)
+    expect(tracer.spans[0]!.ended).toBe(true)
   })
 
   test("message span is parented to session span when available", () => {

@@ -56,6 +56,32 @@ type ReasoningPart = {
   }
 }
 
+type StepStartPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "step-start"
+}
+
+type StepFinishPart = {
+  id: string
+  sessionID: string
+  messageID: string
+  type: "step-finish"
+  reason?: string
+  tokens?: {
+    input?: number
+    output?: number
+    reasoning?: number
+    total?: number
+    cache?: {
+      read?: number
+      write?: number
+    }
+  }
+  cost?: number
+}
+
 function messageKey(sessionID: string, messageID: string): string {
   return `${sessionID}:${messageID}`
 }
@@ -111,6 +137,34 @@ function openAiToolCalls(toolCalls: MessageToolCall[]) {
       arguments: JSON.stringify(call.input ?? {}),
     },
   }))
+}
+
+function outputAttributes(outputText: string | undefined, toolCalls: MessageToolCall[]) {
+  const hasToolCalls = toolCalls.length > 0
+  const outputMessage = hasToolCalls
+    ? {
+        role: "assistant",
+        ...(outputText ? { content: outputText } : {}),
+        tool_calls: openAiToolCalls(toolCalls),
+      }
+    : { role: "assistant", content: outputText ?? "" }
+
+  if (outputText) {
+    return {
+      [OUTPUT_VALUE]: outputText,
+      [OUTPUT_MIME_TYPE]: MimeType.TEXT,
+      [LLM_OUTPUT_MESSAGES]: JSON.stringify([outputMessage]),
+    }
+  }
+  if (hasToolCalls) {
+    return {
+      [OUTPUT_VALUE]: JSON.stringify(toolCallOutput(toolCalls)),
+      [OUTPUT_MIME_TYPE]: MimeType.JSON,
+      [LLM_OUTPUT_MESSAGES]: JSON.stringify([outputMessage]),
+      "opencode.tool_calls": JSON.stringify(toolCallOutput(toolCalls)),
+    }
+  }
+  return {}
 }
 
 function parentContextForMessage(sessionID: string, messageID: string, ctx: HandlerContext) {
@@ -288,60 +342,41 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
   })
 
   const msgKey = messageKey(sessionID, assistant.id)
-  if (!ctx.messageSpans.has(msgKey)) {
-    startMessageSpan(sessionID, assistant.id, modelID ?? "unknown", providerID ?? "unknown", assistant.time.created, ctx)
-  }
-  const msgSpan = ctx.messageSpans.get(msgKey)
-  if (msgSpan) {
-    const outputText = ctx.messageOutputs.get(msgKey)
-    const toolCalls = ctx.messageToolCalls.get(msgKey) ?? []
-    const hasToolCalls = toolCalls.length > 0
-    const outputMessage = hasToolCalls
-      ? {
-          role: "assistant",
-          ...(outputText ? { content: outputText } : {}),
-          tool_calls: openAiToolCalls(toolCalls),
-        }
-      : { role: "assistant", content: outputText ?? "" }
-    msgSpan.setAttributes({
-      [LLM_TOKEN_COUNT_PROMPT]: assistant.tokens.input,
-      [LLM_TOKEN_COUNT_COMPLETION]: assistant.tokens.output,
-      [LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING]: assistant.tokens.reasoning,
-      [LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ]: assistant.tokens.cache.read,
-      [LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE]: assistant.tokens.cache.write,
-      [LLM_TOKEN_COUNT_TOTAL]: totalTokens,
-      [LLM_FINISH_REASON]: assistant.error ? "error" : (assistant.finish ?? "stop"),
-      [LLM_COST_TOTAL]: assistant.cost,
-      ...(outputText
-        ? {
-            [OUTPUT_VALUE]: outputText,
-            [OUTPUT_MIME_TYPE]: MimeType.TEXT,
-            [LLM_OUTPUT_MESSAGES]: JSON.stringify([outputMessage]),
-          }
-        : hasToolCalls
-          ? {
-              [OUTPUT_VALUE]: JSON.stringify(toolCallOutput(toolCalls)),
-              [OUTPUT_MIME_TYPE]: MimeType.JSON,
-              [LLM_OUTPUT_MESSAGES]: JSON.stringify([outputMessage]),
-            }
-          : {}),
-      ...(hasToolCalls
-        ? {
-            "opencode.tool_calls": JSON.stringify(toolCallOutput(toolCalls)),
-          }
-        : {}),
-      cost_usd: assistant.cost,
-      duration_ms: duration,
-    })
-    if (assistant.error) {
-      msgSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorSummary(assistant.error) })
-    } else {
-      msgSpan.setStatus({ code: SpanStatusCode.OK })
+  if (!ctx.finalizedMessageSpans.has(msgKey)) {
+    if (!ctx.messageSpans.has(msgKey)) {
+      startMessageSpan(sessionID, assistant.id, modelID ?? "unknown", providerID ?? "unknown", assistant.time.created, ctx)
     }
-    msgSpan.end(assistant.time.completed)
-    ctx.messageSpans.delete(msgKey)
-    ctx.messageOutputs.delete(msgKey)
-    ctx.messageToolCalls.delete(msgKey)
+    const msgSpan = ctx.messageSpans.get(msgKey)
+    if (msgSpan) {
+      const outputText = ctx.messageOutputs.get(msgKey)
+      const toolCalls = ctx.messageToolCalls.get(msgKey) ?? []
+      msgSpan.setAttributes({
+        [LLM_SYSTEM]: providerID,
+        [LLM_PROVIDER]: providerID,
+        [LLM_MODEL_NAME]: modelID,
+        [LLM_TOKEN_COUNT_PROMPT]: assistant.tokens.input,
+        [LLM_TOKEN_COUNT_COMPLETION]: assistant.tokens.output,
+        [LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING]: assistant.tokens.reasoning,
+        [LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ]: assistant.tokens.cache.read,
+        [LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE]: assistant.tokens.cache.write,
+        [LLM_TOKEN_COUNT_TOTAL]: totalTokens,
+        [LLM_FINISH_REASON]: assistant.error ? "error" : (assistant.finish ?? "stop"),
+        [LLM_COST_TOTAL]: assistant.cost,
+        ...outputAttributes(outputText, toolCalls),
+        cost_usd: assistant.cost,
+        duration_ms: duration,
+      })
+      if (assistant.error) {
+        msgSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorSummary(assistant.error) })
+      } else {
+        msgSpan.setStatus({ code: SpanStatusCode.OK })
+      }
+      msgSpan.end(assistant.time.completed)
+      ctx.messageSpans.delete(msgKey)
+      ctx.messageOutputs.delete(msgKey)
+      ctx.messageToolCalls.delete(msgKey)
+      ctx.finalizedMessageSpans.add(msgKey)
+    }
   }
 
   if (assistant.error) {
@@ -416,6 +451,18 @@ export function handleMessageUpdated(e: EventMessageUpdated, ctx: HandlerContext
  */
 export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: HandlerContext) {
   const part = e.properties.part
+
+  if (part.type === "step-start") {
+    const stepStart = part as unknown as StepStartPart
+    startMessageSpan(stepStart.sessionID, stepStart.messageID, "unknown", "unknown", Date.now(), ctx)
+    return
+  }
+
+  if (part.type === "step-finish") {
+    const stepFinish = part as unknown as StepFinishPart
+    finalizeMessageSpanFromStep(stepFinish, ctx)
+    return
+  }
 
   if (part.type === "reasoning") {
     const reasoning = part as unknown as ReasoningPart
@@ -612,6 +659,42 @@ export function handleMessagePartUpdated(e: EventMessagePartUpdated, ctx: Handle
       duration_ms,
     })
   }
+}
+
+function finalizeMessageSpanFromStep(step: StepFinishPart, ctx: HandlerContext) {
+  const msgKey = messageKey(step.sessionID, step.messageID)
+  if (ctx.finalizedMessageSpans.has(msgKey)) return
+  const msgSpan = ctx.messageSpans.get(msgKey)
+  if (!msgSpan) return
+
+  const outputText = ctx.messageOutputs.get(msgKey)
+  const toolCalls = ctx.messageToolCalls.get(msgKey) ?? []
+  const inputTokens = step.tokens?.input ?? 0
+  const outputTokens = step.tokens?.output ?? 0
+  const reasoningTokens = step.tokens?.reasoning ?? 0
+  const cacheRead = step.tokens?.cache?.read ?? 0
+  const cacheWrite = step.tokens?.cache?.write ?? 0
+  const totalTokens = step.tokens?.total ?? inputTokens + outputTokens + reasoningTokens + cacheRead + cacheWrite
+  const cost = step.cost ?? 0
+  msgSpan.setAttributes({
+    [LLM_TOKEN_COUNT_PROMPT]: inputTokens,
+    [LLM_TOKEN_COUNT_COMPLETION]: outputTokens,
+    [LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING]: reasoningTokens,
+    [LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ]: cacheRead,
+    [LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE]: cacheWrite,
+    [LLM_TOKEN_COUNT_TOTAL]: totalTokens,
+    [LLM_FINISH_REASON]: step.reason ?? "stop",
+    [LLM_COST_TOTAL]: cost,
+    ...outputAttributes(outputText, toolCalls),
+    cost_usd: cost,
+  })
+  msgSpan.setStatus({ code: SpanStatusCode.OK })
+  msgSpan.end(Date.now())
+  ctx.messageSpans.delete(msgKey)
+  ctx.messageOutputs.delete(msgKey)
+  ctx.messageToolCalls.delete(msgKey)
+  ctx.finalizedMessageSpans.add(msgKey)
+  ctx.log("debug", "otel: llm span finalized from step-finish", { sessionID: step.sessionID, messageID: step.messageID })
 }
 
 /**

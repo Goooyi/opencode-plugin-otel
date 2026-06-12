@@ -104,6 +104,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
   const sessionDiffTotals = new Map()
   const sessionSpans = new Map()
   const messageSpans = new Map()
+  const finalizedMessageSpans = new Set<string>()
   const sessionInputs = new Map()
   const messageOutputs = new Map()
   const messageToolCalls = new Map()
@@ -139,6 +140,7 @@ export const OtelPlugin: Plugin = async ({ project, client, directory, worktree 
     rootContext,
     sessionSpans,
     messageSpans,
+    finalizedMessageSpans,
     sessionInputs,
     messageOutputs,
     messageToolCalls,
